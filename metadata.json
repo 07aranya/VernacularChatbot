@@ -1,0 +1,7 @@
+{
+  "name": " YourBuddy AI Tutor",
+  "description": "A vernacular educational chatbot specializing in Grade 1-10 curriculum for Marathi and Hindi speaking students.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
