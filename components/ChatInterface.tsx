@@ -16,7 +16,8 @@ import {
   SlidersHorizontal,
   Share2,
   Plus,
-  Award
+  Award,
+  ShieldCheck
 } from 'lucide-react';
 import {
   UserContext,
@@ -34,13 +35,16 @@ import {
   createChatSession,
   sendMessageToGemini,
   generateQuiz,
-  generateProgressReport
+  generateProgressReport,
+  fetchServerStatus,
+  TutorApiError,
+  type TutorSession,
+  type QuotaSnapshot
 } from '../services/geminiService';
 import { saveSession, createNewSessionId, trackTopic } from '../services/storageService';
 import ChatMessageBubble from './ChatMessageBubble';
 import EducationConfig from './EducationConfig';
 import ChatHistorySidebar from './ChatHistorySidebar';
-import { Chat } from '@google/genai';
 
 // --- Curriculum Topics for Quick Chips ---
 const CURRICULUM_DATA: Record<string, string[]> = {
@@ -134,7 +138,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [chatSession, setChatSession] = useState<Chat | null>(null);
+  const [chatSession, setChatSession] = useState<TutorSession | null>(null);
   const [sessionId, setSessionId] = useState<string>(createNewSessionId());
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [quizScores, setQuizScores] = useState<QuizScore[]>([]);
@@ -144,10 +148,35 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [suggestedTopics, setSuggestedTopics] = useState<string[]>([]);
   const [initError, setInitError] = useState<string | null>(null);
+  const [quota, setQuota] = useState<QuotaSnapshot | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // --- Check Backend API Key & Quota Status ---
+  useEffect(() => {
+    let active = true;
+    fetchServerStatus()
+      .then((status) => {
+        if (!active) return;
+        if (status.quota) setQuota(status.quota);
+        if (!status.configured) {
+          setInitError(
+            'Server Gemini API key is not configured. Add GEMINI_API_KEY in Vercel Environment Variables and redeploy (or set it in .env.local locally).'
+          );
+        } else {
+          setInitError(null);
+        }
+      })
+      .catch((err) => {
+        if (!active) return;
+        console.warn('Could not reach /api/chat status:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // --- Auto-Resize Textarea ---
   useEffect(() => {
@@ -215,7 +244,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       const history = messages.length > 0 ? messages : undefined;
       const chat = createChatSession(context, mode, history);
       setChatSession(chat);
-      setInitError(null);
 
       if (messages.length === 0) {
         let greeting = '';
@@ -304,6 +332,44 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   }, [messages, isLoading]);
 
+  const handleTutorApiError = (error: unknown, prefix: string) => {
+    console.error(prefix, error);
+    if (error instanceof TutorApiError) {
+      if (error.quota) setQuota(error.quota);
+      if (error.code === 'API_KEY_MISSING') {
+        setInitError(error.message);
+        return;
+      }
+      const retryNote =
+        error.status === 429 && error.retryAfterSeconds
+          ? ` (Try again in ~${error.retryAfterSeconds}s)`
+          : '';
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: 'model',
+          text: `${error.message}${retryNote}`,
+          timestamp: new Date(),
+          isError: true
+        }
+      ]);
+      return;
+    }
+
+    const msg = error instanceof Error ? error.message : 'Connection failed';
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `err-${Date.now()}`,
+        role: 'model',
+        text: `${prefix}: ${msg}`,
+        timestamp: new Date(),
+        isError: true
+      }
+    ]);
+  };
+
   const handleQuizRequest = async () => {
     if (!chatSession || isLoading) return;
     setIsLoading(true);
@@ -315,26 +381,17 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     };
     setMessages((prev) => [...prev, userMsg]);
     try {
-      const responseText = await generateQuiz(
+      const { text: responseText, quota: nextQuota } = await generateQuiz(
         chatSession,
         context.chapter || context.subject || 'General'
       );
+      if (nextQuota) setQuota(nextQuota);
       setMessages((prev) => [
         ...prev,
         { id: (Date.now() + 1).toString(), role: 'model', text: responseText, timestamp: new Date() }
       ]);
-    } catch (e: any) {
-      console.error(e);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `err-quiz-${Date.now()}`,
-          role: 'model',
-          text: `Could not generate quiz: ${e?.message || 'Connection failed'}.`,
-          timestamp: new Date(),
-          isError: true
-        }
-      ]);
+    } catch (e) {
+      handleTutorApiError(e, 'Could not generate quiz');
     } finally {
       setIsLoading(false);
     }
@@ -350,7 +407,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     ]);
 
     try {
-      const report = await generateProgressReport(chatSession, context.name, quizScores);
+      const { text: report, quota: nextQuota } = await generateProgressReport(
+        chatSession,
+        context.name,
+        quizScores
+      );
+      if (nextQuota) setQuota(nextQuota);
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
 
       if (navigator.share) {
@@ -371,8 +433,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         ]);
       }
     } catch (e) {
-      console.error(e);
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      handleTutorApiError(e, 'Could not generate report');
     }
   };
 
@@ -455,11 +517,33 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   };
 
   const processImageFile = (file?: File) => {
-    if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onloadend = () => setSelectedImage(reader.result as string);
-      reader.readAsDataURL(file);
-    }
+    if (!file || !file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 1280;
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        if (scale === 1 && dataUrl.length < 700_000) {
+          setSelectedImage(dataUrl);
+          return;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          setSelectedImage(dataUrl);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        setSelectedImage(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = () => setSelectedImage(dataUrl);
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -518,11 +602,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setIsLoading(true);
 
     try {
-      let responseText = await sendMessageToGemini(
+      const { text: rawResponseText, quota: nextQuota } = await sendMessageToGemini(
         chatSession,
         userMsg.text,
         imageToSend || undefined
       );
+      if (nextQuota) setQuota(nextQuota);
+      let responseText = rawResponseText;
 
       let quizScoreDetected: string | null = null;
       const scoreMatch = responseText.match(/\[\[QUIZ_SCORE: (.+?)\]\]/);
@@ -605,18 +691,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       }
 
       setMessages((prev) => [...prev, ...newMessages]);
-    } catch (error: any) {
-      console.error('Error in handleSend:', error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `err-${Date.now()}`,
-          role: 'model',
-          text: `Error: ${error.message || 'Connection failed'}. Please check your API key in .env.local.`,
-          timestamp: new Date(),
-          isError: true
-        }
-      ]);
+    } catch (error) {
+      handleTutorApiError(error, 'Error');
     } finally {
       setIsLoading(false);
     }
@@ -720,6 +796,25 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
             {/* Right action bar */}
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              {quota && !initError && (
+                <div
+                  title={`Daily limit: ${quota.perIpDailyRemaining}/${quota.perIpDailyLimit} left for you • Site daily: ${quota.dailyRemaining}/${quota.dailyLimit} left • Rate: ${quota.perIpMinuteLimit}/min (${quota.distributed ? 'Redis-backed' : 'Instance-scoped'})`}
+                  className={`hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] font-bold ${
+                    quota.perIpDailyRemaining === 0 || quota.dailyRemaining === 0
+                      ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800/70'
+                      : quota.perIpDailyRemaining <= 5 || quota.dailyRemaining <= 20
+                      ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800/70'
+                      : 'bg-slate-100/80 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                  }`}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
+                  <span>
+                    {Math.min(quota.perIpDailyRemaining, quota.dailyRemaining)}/
+                    {quota.perIpDailyLimit}
+                  </span>
+                </div>
+              )}
+
               {isEdu && (
                 <button
                   type="button"
@@ -872,7 +967,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   </h3>
                   <p className="text-sm text-rose-700 dark:text-rose-300/90 mt-1">{initError}</p>
                   <p className="text-xs text-rose-600 dark:text-rose-400 mt-2 font-mono">
-                    Ensure .env.local defines API_KEY=... for Vite.
+                    Vercel: Settings → Environment Variables → GEMINI_API_KEY (then Redeploy) • Local: .env.local
                   </p>
                 </div>
               </div>
