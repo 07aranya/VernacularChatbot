@@ -96,3 +96,11 @@ export const getAnalytics = (): TopicMetric[] => {
     return [];
   }
 };
+
+export const clearAnalytics = () => {
+  try {
+    localStorage.removeItem(ANALYTICS_KEY);
+  } catch (e) {
+    console.error("Failed to clear analytics", e);
+  }
+};

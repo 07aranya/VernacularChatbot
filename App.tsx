@@ -5,16 +5,32 @@ import ChatInterface from './components/ChatInterface';
 import LandingPage from './components/LandingPage';
 import TeacherDashboard from './components/TeacherDashboard';
 
+const THEME_STORAGE_KEY = 'yourbuddy_theme';
+
 const App: React.FC = () => {
   const [userContext, setUserContext] = useState<UserContext | null>(null);
   const [view, setView] = useState<'landing' | 'onboarding' | 'chat' | 'dashboard'>('landing');
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      if (saved === 'dark') return true;
+      if (saved === 'light') return false;
+      return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
+    }
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, isDarkMode ? 'dark' : 'light');
+    } catch {
+      // Ignore storage failures
     }
   }, [isDarkMode]);
 
@@ -42,7 +58,7 @@ const App: React.FC = () => {
 
   if (view === 'landing') {
     return (
-      <LandingPage 
+      <LandingPage
         onStart={handleStart}
         onTeacherDashboard={handleTeacherDashboard}
         isDarkMode={isDarkMode}
@@ -53,26 +69,28 @@ const App: React.FC = () => {
 
   if (view === 'dashboard') {
     return (
-      <TeacherDashboard 
+      <TeacherDashboard
         onBack={() => setView('landing')}
         isDarkMode={isDarkMode}
+        toggleTheme={toggleTheme}
       />
     );
   }
 
   return (
-    <div className="antialiased text-slate-900 dark:text-slate-100 min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-300">
+    <div className="antialiased text-slate-900 dark:text-slate-100 min-h-screen bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
       {view === 'onboarding' ? (
-        <Onboarding 
-          onComplete={handleOnboardingComplete} 
+        <Onboarding
+          onComplete={handleOnboardingComplete}
+          onBack={handleBackToLanding}
           isDarkMode={isDarkMode}
           toggleTheme={toggleTheme}
         />
       ) : (
         userContext && (
-          <ChatInterface 
-            context={userContext} 
-            onBack={handleBackToLanding} 
+          <ChatInterface
+            context={userContext}
+            onBack={handleBackToLanding}
             isDarkMode={isDarkMode}
             toggleTheme={toggleTheme}
           />

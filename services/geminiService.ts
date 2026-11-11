@@ -1,5 +1,5 @@
 import { GoogleGenAI, Chat, Content } from "@google/genai";
-import { UserContext, Language, ChatMode, Board, Tone, ChatMessage, QuizScore } from "../types";
+import { UserContext, Language, ChatMode, Board, Tone, ChatMessage, QuizScore, DifficultyLevel } from "../types";
 
 let aiInstance: GoogleGenAI | null = null;
 
@@ -18,6 +18,7 @@ export const createChatSession = (context: UserContext, mode: ChatMode, historyM
   
   let systemInstruction = "";
   const tone = context.tone || Tone.TEACHER;
+  const difficulty = context.difficulty || DifficultyLevel.INTERMEDIATE;
 
   // Language & Tone Logic
   let langInstruction = "Respond in clear, simple English.";
@@ -33,6 +34,20 @@ export const createChatSession = (context: UserContext, mode: ChatMode, historyM
       - Start answers with things like "Dekh bhai", "Listen buddy", "Arre sun", "Mitr".
       - Simplify concepts using real-life funny examples.
      `;
+  }
+
+  // Difficulty Logic
+  let difficultyInstruction = "";
+  switch (difficulty) {
+    case DifficultyLevel.BEGINNER:
+      difficultyInstruction = "EXPLAIN LIKE I'M 5. Use very simple words, lots of analogies, and avoid heavy jargon. Go step-by-step.";
+      break;
+    case DifficultyLevel.ADVANCED:
+      difficultyInstruction = "EXPLAIN AT AN ADVANCED LEVEL. Use technical terminology, go into depth, and assume the user has strong foundational knowledge. Challenge the user.";
+      break;
+    default:
+      difficultyInstruction = "EXPLAIN AT A STANDARD SCHOOL LEVEL. Balance simplicity with correct terminology.";
+      break;
   }
 
   // Language Specifics (combining with tone)
@@ -66,6 +81,15 @@ export const createChatSession = (context: UserContext, mode: ChatMode, historyM
     - Ensure the SVG is responsive (use viewBox), uses high-contrast colors (black strokes, simple fills), and has readable text labels if needed.
     - If the user asks for a diagram (e.g. "Draw a triangle", "Show me the water cycle"), ALWAYS provide this SVG block.
   `;
+
+  const mathInstruction = `
+    MATH & FORMULA FORMATTING:
+    - ALWAYS use LaTeX formatting for mathematical equations and formulas.
+    - Enclose inline math in single dollar signs (e.g., $E = mc^2$).
+    - Enclose block/display math in double dollar signs (e.g., $$x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$$).
+    - Do NOT use raw text representations like "sqrt()" or "x^2" or "1/2" for complex fractions. Use LaTeX: $\sqrt{...}$, $x^2$, $\frac{1}{2}$.
+    - For complex derivations, use block math $$...$$ to center them.
+  `;
   
   const analyticsInstruction = `
     ANALYTICS TAGGING (IMPORTANT):
@@ -73,9 +97,15 @@ export const createChatSession = (context: UserContext, mode: ChatMode, historyM
     - If the user asks an educational question (e.g., "Explain photosynthesis", "How to solve quadratic equations", "What is gravity?"), YOU MUST identify the main academic topic.
     - Append the topic to the very end of your response in this strict hidden format: [[TOPIC: Topic Name]]
     - Example 1: User: "What is Newton's third law?" -> Response: "Action and reaction are equal... [[TOPIC: Newton's Laws]]"
-    - Example 2: User: "Help me with algebra." -> Response: "Sure! ... [[TOPIC: Algebra]]"
-    - Keep topic names consistent and short (e.g., use "Thermodynamics" instead of "Chapter 5 Thermodynamics").
-    - Do NOT add this tag for simple greetings like "Hi" or "How are you".
+    - Keep topic names consistent and short.
+  `;
+
+  const adaptiveDifficultyInstruction = `
+    ADAPTIVE DIFFICULTY (CRITICAL):
+    - Monitor the user's questions and responses.
+    - If the user seems to be STRUGGLING, asking for simpler explanations, or getting things wrong frequently, you MUST output this tag at the end: [[AUTO_DIFF: ${DifficultyLevel.BEGINNER}]]
+    - If the user seems ADVANCED, asking deep conceptual questions, or showing boredom with simple answers, you MUST output this tag at the end: [[AUTO_DIFF: ${DifficultyLevel.ADVANCED}]]
+    - If the level is appropriate, do not output any tag.
   `;
 
   if (mode === ChatMode.NORMAL) {
@@ -84,6 +114,7 @@ export const createChatSession = (context: UserContext, mode: ChatMode, historyM
       ${langInstruction}
       ${toneInstruction}
       ${diagramInstruction}
+      ${mathInstruction}
       ${analyticsInstruction}
       Your goal is to have casual conversations with ${context.name}.
       
@@ -94,9 +125,10 @@ export const createChatSession = (context: UserContext, mode: ChatMode, historyM
     const gradeStr = context.grade ? `Grade ${context.grade}` : "school";
     const subjectStr = context.subject ? context.subject : "general subjects";
     const boardStr = context.board || Board.CBSE;
+    const chapterStr = context.chapter ? `FOCUS CHAPTER: ${context.chapter}` : "No specific chapter focus.";
     
     // Board-specific instructions
-    let curriculumInstruction = `Follow the ${boardStr} curriculum guidelines.`;
+    let curriculumInstruction = `Follow the ${boardStr} curriculum guidelines. ${chapterStr}`;
     
     if (boardStr === Board.CBSE) {
       curriculumInstruction += `
@@ -104,29 +136,29 @@ export const createChatSession = (context: UserContext, mode: ChatMode, historyM
         - When defining terms, use definitions found in standard NCERT textbooks.
         - Use examples common in Indian NCERT textbooks.
       `;
-    } else if (boardStr === Board.STATE) {
-      curriculumInstruction += `
-        \nFollow the general State Board syllabus for Maharashtra/India.
-        - Focus on local context.
-      `;
     }
 
     systemInstruction = `
       You are YourBuddy, an expert AI tutor for ${gradeStr} focusing on ${subjectStr}.
+      Current Difficulty Level: ${difficulty}
+      ${difficultyInstruction}
       ${langInstruction}
       ${toneInstruction}
       ${diagramInstruction}
+      ${mathInstruction}
       ${analyticsInstruction}
+      ${adaptiveDifficultyInstruction}
       
       You are acting as a strict adherent to the ${boardStr} syllabus.
       ${curriculumInstruction}
       
       Guidelines:
       1. Adapt complexity to ${gradeStr} level.
-      2. Use analogies relevant to India (cricket, festivals, local geography).
+      2. Use analogies relevant to India.
       3. Break down complex topics into bullet points.
       4. Always end with a follow-up question to check understanding.
       5. Keep responses concise (under 200 words).
+      6. Format math formulas clearly using LaTeX ($...$ or $$...$$).
     `;
   }
 
@@ -134,11 +166,10 @@ export const createChatSession = (context: UserContext, mode: ChatMode, historyM
   let history: Content[] | undefined = undefined;
   if (historyMessages && historyMessages.length > 0) {
     history = historyMessages
-      .filter(msg => !msg.isError) // Filter out error messages
+      .filter(msg => !msg.isError)
       .map(msg => {
         const parts: any[] = [];
         if (msg.image) {
-          // Robustly handle data URLs in history as well
           let mimeType = 'image/jpeg';
           let data = msg.image;
           
@@ -148,7 +179,6 @@ export const createChatSession = (context: UserContext, mode: ChatMode, historyM
               mimeType = matches[1];
               data = matches[2];
             } else {
-              // Fallback for simple base64 string without prefix if that's what we stored
               data = msg.image.split(',')[1] || msg.image;
             }
           }
@@ -186,7 +216,7 @@ export const generateQuiz = async (chat: Chat, topic: string): Promise<string> =
     Constraint: Questions must be strictly based on the NCERT/State Board textbook content for this grade level. Do not ask outside general knowledge.
     
     Output Format:
-    1. Question
+    1. Question (Use LaTeX for math)
     A) Option
     B) Option
     C) Option
@@ -197,9 +227,6 @@ export const generateQuiz = async (chat: Chat, topic: string): Promise<string> =
     IMPORTANT INSTRUCTION FOR SCORING:
     After the user has answered the questions and you have provided the feedback/explanations, you MUST conclude the quiz by explicitly stating the final score in this EXACT hidden format:
     [[QUIZ_SCORE: X/5]]
-    
-    Example: "Great job! ... [[QUIZ_SCORE: 4/5]]"
-    Use this tag ONLY when the quiz is completely finished.
   `;
   
   const response = await chat.sendMessage({ message: quizPrompt });
@@ -220,16 +247,8 @@ export const generateProgressReport = async (chat: Chat, studentName: string, qu
 
   const prompt = `
     Generate a short, fun, and emoji-rich 'Progress Report' for ${studentName} to share on WhatsApp with parents.
-    
     Context:
     ${scoreContext}
-    
-    Instructions:
-    1. Summarize the topics discussed in this session.
-    2. Explicitly mention the quiz scores provided in the context above. If multiple, list them.
-    3. Keep the tone encouraging and positive.
-    4. Keep it under 100 words.
-    
     Start strictly with: "📢 *YourBuddy Study Update* 📢"
   `;
   const response = await chat.sendMessage({ message: prompt });
@@ -242,19 +261,15 @@ export const sendMessageToGemini = async (chat: Chat, message: string, imageBase
     if (imageBase64) {
       let mimeType = 'image/jpeg';
       let data = imageBase64;
-      
-      // Dynamic MimeType extraction
       if (imageBase64.startsWith('data:')) {
         const matches = imageBase64.match(/^data:([^;]+);base64,(.+)$/);
         if (matches && matches.length === 3) {
           mimeType = matches[1];
           data = matches[2];
         } else {
-           // Fallback if regex fails but starts with data:
            data = imageBase64.split(',')[1];
         }
       }
-
       const imagePart = {
         inlineData: { mimeType: mimeType, data: data }
       };

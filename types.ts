@@ -17,7 +17,18 @@ export enum Subject {
   HISTORY = 'History',
   GEOGRAPHY = 'Geography',
   ENGLISH_LIT = 'English Literature',
-  GENERAL = 'General Knowledge'
+  GENERAL = 'General Knowledge',
+  // Grade 11-12 Specifics
+  PHYSICS = 'Physics',
+  CHEMISTRY = 'Chemistry',
+  BIOLOGY = 'Biology',
+  COMPUTER_SCIENCE = 'Computer Science',
+  ACCOUNTANCY = 'Accountancy',
+  ECONOMICS = 'Economics',
+  BUSINESS_STUDIES = 'Business Studies',
+  POLITICAL_SCIENCE = 'Political Science',
+  SOCIOLOGY = 'Sociology',
+  PSYCHOLOGY = 'Psychology'
 }
 
 export enum Board {
@@ -37,14 +48,21 @@ export enum Tone {
   FRIEND = 'Friend (Dost)'
 }
 
+export enum DifficultyLevel {
+  BEGINNER = 'Beginner',
+  INTERMEDIATE = 'Intermediate',
+  ADVANCED = 'Advanced'
+}
+
 export interface UserContext {
   name: string;
   language: Language;
-  // Grade, Subject, Board, and Tone are optional/specific to usage
   grade?: number;
   subject?: Subject;
   board?: Board;
+  chapter?: string; // New field for specific chapter focus
   tone?: Tone;
+  difficulty?: DifficultyLevel;
 }
 
 export interface ChatMessage {
@@ -54,6 +72,7 @@ export interface ChatMessage {
   image?: string; // Base64 string
   timestamp: Date;
   isError?: boolean;
+  action?: 'SHARE_REPORT';
 }
 
 export interface QuizScore {
